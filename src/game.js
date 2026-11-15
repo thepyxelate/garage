@@ -102,8 +102,7 @@ function groupsFor(t) {
     P('Rim style', 'rimStyle', [['classic', 'Classic'], ['six', 'Six-spoke'], ['mesh', 'Mesh'], ['y', 'Y-spoke'], ['aero', 'Aero'], ['deep', 'Deep dish']]),
     P('Size', 'rimSize', [[17, '17"'], [18, '18"'], [19, '19"'], [20, '20"']]),
     S('Rim color', 'rimColor', [['#c9ced6', 'Silver'], ['#3a3d45', 'Gunmetal'], ['#16171b', 'Black'], ['#c9a227', 'Gold'], ['#8c5a2b', 'Bronze'], ['#ededed', 'White'], ['#c8202e', 'Red'], ['#2ec4e6', 'Cyan']]),
-    S('Brake caliper', 'caliper', [['#e0262f', 'Red'], ['#ffcc00', 'Yellow'], ['#2a6cff', 'Blue'], ['#3bd16f', 'Green'], ['#ff3da8', 'Pink'], ['#1a1a1a', 'Black']]),
-    P('Brakes', 'brakes', [['stock', 'Stock'], ['sport', 'Sport'], ['ceramic', 'Carbon-ceramic']])
+    S('Brake caliper', 'caliper', [['#e0262f', 'Red'], ['#ffcc00', 'Yellow'], ['#2a6cff', 'Blue'], ['#3bd16f', 'Green'], ['#ff3da8', 'Pink'], ['#1a1a1a', 'Black']])
   ];
   if (t === 'lights') return [
     S('Underglow', 'neon', [['off', 'Off'], ['#2ee6d6', 'Cyan'], ['#ff3da8', 'Pink'], ['#3d7bff', 'Blue'], ['#9b5cff', 'Violet'], ['#3bff8a', 'Green'], ['#ff3b3b', 'Red'], ['#ffffff', 'White']]),
@@ -120,6 +119,7 @@ function groupsFor(t) {
     P('Gearbox', 'gearbox', [['stock', 'Stock'], ['sport', 'Sport'], ['race', 'Race']]),
     P('Suspension', 'susp', [['stock', 'Stock'], ['sport', 'Sport'], ['stance', 'Stance']]),
     P('Tires', 'tires', [['street', 'Street'], ['sport', 'Sport'], ['slick', 'Slick']]),
+    P('Brakes', 'brakes', [['stock', 'Stock · fade when hot'], ['sport', 'Sport · stronger'], ['ceramic', 'Carbon-ceramic · no fade']]),
     P('Final drive', 'finalDrive', [[3.5, '3.50 · top speed'], [3.8, '3.80'], [4.1, '4.10 · balanced'], [4.4, '4.40'], [4.7, '4.70 · launch']]),
     P('ECU map', 'ecu', [['low', 'Low-end torque'], ['balanced', 'Balanced'], ['high', 'High-rpm power']]),
     P('Nitro tune', 'nitroTune', [['long', 'Long and soft'], ['balanced', 'Balanced'], ['power', 'Short and hard']])
@@ -1895,6 +1895,8 @@ function physicsFor(c, factor) {
     gears: [3.55, 2.32, 1.7, 1.32, 1.0, 0.7], final: c.finalDrive || 4.1, r: M.R,
     shiftTime: ({ stock: 0.3, sport: 0.19, race: 0.11 })[c.gearbox],
     grip: ({ street: 1.0, sport: 1.12, slick: 1.32 })[c.tires] * 0.74 * B.grip,
+    // brakes: share of the tyres' grip they can use, and how much they lose when hot
+    brakeK: ({ stock: 0.78, sport: 0.9, ceramic: 1.0 })[c.brakes] || 0.78, fade: ({ stock: 0.45, sport: 0.25, ceramic: 0.05 })[c.brakes] ?? 0.45,
     cda: cdaOf(c),
     bottles: c.nitro, nosMult: nt[0], nosDur: nt[1]
   };
@@ -4594,7 +4596,11 @@ function stepPlayer(dt) {
   yr += ((a * FyF * cs - b * FyR) / Iz - yr * (0.9 + (hb ? 0 : SPIN_DAMP * smooth01((Math.abs(beta) - 0.45) / 0.45)))) * dt;
   vf += ax * dt; vl += ay * dt;
   let B = 0;
-  if (brk && vf > 0.5) B = mu * G * 0.95; if (gas && vf < -0.5) B = mu * G * 0.95;
+  // brakes heat up with hard stops from speed and cool while you drive; hot stock brakes lose bite
+  const bk = (p.brakeK || 0.78) * (1 - (p.fade || 0) * smooth01(((R.bt || 0) - 0.55) / 0.45));
+  if (brk && vf > 0.5) B = mu * G * 0.95 * bk; if (gas && vf < -0.5) B = mu * G * 0.95 * bk;
+  R.bt = clamp((R.bt || 0) + (B && av > 3 ? B * av * dt / 1800 : 0) - dt * (0.025 + av * 0.0006), 0, 1);
+  if (R.bt > 0.8 && p.fade > 0.1 && roamT - (R.btPop || -9) > 6) { R.btPop = roamT; showPop('BRAKES FADING · LET THEM COOL', 'bad'); }
   if (B) { const dv = B * dt; vf = Math.abs(vf) <= dv ? 0 : vf - Math.sign(vf) * dv; }
   if (!gas && !brk && Math.hypot(vf, vl) < 0.3 && Math.abs(R.slopeF || 0) < 0.02) { vf = 0; vl = 0; yr = 0; }
   R.vx = fx * vf + rx * vl; R.vz = fz * vf + rz * vl;
@@ -4620,7 +4626,7 @@ function collideStatic() {
       if (s.prop) {
         if (s.prop.down) continue;
         const sp = Math.hypot(R.vx, R.vz);
-        if (sp > 4 && Math.hypot(cx - s.x, cz - s.z) < r + s.r) { knockDown(s.prop, R.vx / sp, R.vz / sp, sp); R.vx *= 0.88; R.vz *= 0.88; R.shake = Math.min(1, R.shake + 0.25); if (audio) pop(0.18); continue; }
+        if (sp > 4 && Math.hypot(cx - s.x, cz - s.z) < r + s.r) { knockDown(s.prop, R.vx / sp, R.vz / sp, sp); ambBump(4); R.vx *= 0.88; R.vz *= 0.88; R.shake = Math.min(1, R.shake + 0.25); if (audio) pop(0.18); continue; }
       }
       if (s.t) { const dx = cx - s.x, dz = cz - s.z, d = Math.hypot(dx, dz); if (d >= r + s.r || d < 1e-6) continue; nx = dx / d; nz = dz / d; pen = r + s.r - d; }
       else {
@@ -4634,7 +4640,7 @@ function collideStatic() {
       if (vn < 0) { R.vx -= 1.3 * vn * nx; R.vz -= 1.3 * vn * nz; R.vx *= 0.96; R.vz *= 0.96; hit = Math.max(hit, -vn); }
     }
   }
-  if (hit > 3) { R.yr *= 0.5; R.shake = Math.min(1, hit / 18); if (audio) pop(Math.min(0.5, hit / 40)); crashChain(); }
+  if (hit > 3) { R.yr *= 0.5; R.shake = Math.min(1, hit / 18); if (audio) pop(Math.min(0.5, hit / 40)); crashChain(hit); }
 }
 // Knocked-over props: the prop's vertices in its chunk mesh are collapsed to a point (hidden), and a copy of exactly
 // those vertices tips over away from the car, lies on the ground, then sinks. The original comes back later, out of sight.
@@ -4692,7 +4698,7 @@ function deckUpdate() {
   const R = roam, fx = Math.cos(R.h), fz = Math.sin(R.h);
   const bounce = (nx, nz) => { // (nx, nz) points back to where the car is allowed to be
     const vn = R.vx * nx + R.vz * nz;
-    if (vn < 0) { R.vx -= 1.3 * vn * nx; R.vz -= 1.3 * vn * nz; R.vx *= 0.97; R.vz *= 0.97; if (-vn > 4) { R.shake = Math.min(1, -vn / 18); if (audio) pop(Math.min(0.5, -vn / 40)); crashChain(); } }
+    if (vn < 0) { R.vx -= 1.3 * vn * nx; R.vz -= 1.3 * vn * nz; R.vx *= 0.97; R.vz *= 0.97; if (-vn > 4) { R.shake = Math.min(1, -vn / 18); if (audio) pop(Math.min(0.5, -vn / 40)); crashChain(-vn); } }
   };
   R.slopeF = 0;
   if (R.deck) {
@@ -4726,7 +4732,7 @@ function collideVehicles() {
       const nx = dx / d, nz = dz / d, pen = 2 - d;
       R.x += nx * pen; R.z += nz * pen;
       const rvx = R.vx - c.tx * c.v, rvz = R.vz - c.tz * c.v, vn = rvx * nx + rvz * nz;
-      if (vn < 0) { R.vx -= 1.25 * vn * nx; R.vz -= 1.25 * vn * nz; if (-vn > 3) { R.shake = Math.min(1, -vn / 18); if (audio) pop(Math.min(0.5, -vn / 40)); crashChain(); } }
+      if (vn < 0) { R.vx -= 1.25 * vn * nx; R.vz -= 1.25 * vn * nz; if (-vn > 3) { R.shake = Math.min(1, -vn / 18); if (audio) pop(Math.min(0.5, -vn / 40)); crashChain(-vn); } }
       c.hitT = c.bot ? 0.6 : 2.2;
     }
   }
@@ -4805,6 +4811,7 @@ function exitRoam(keepNet) {
   const R = roam; if (!R.active) return;
   if (LOD.prs !== 1) { LOD.prs = 1; renderer.setPixelRatio(LOD.basePR); resize(); }
   speedFx.enabled = false; if (!keepNet) net.exit();
+  if (amb.on) ambShift(false, true);
   endEvent(true); if (R.photo) setPhoto(false); if (R.mapOpen) setMap(false);
   R.active = false; if (R.chat) closeChat(false);
   audioStop();
@@ -4843,7 +4850,7 @@ function roamFrame(dtRaw) {
     if (c.bot && !c.racing && d > 750) spawnVeh(c, R.x, R.z, 150, 360);
   }
   collideVehicles(); if (!(R.deck && R.y > 0.6)) collideStatic();
-  updateSignals(); fallenFrame(dt); eventFrame(dt); styleUpdate(dt);
+  updateSignals(); fallenFrame(dt); eventFrame(dt); ambFrame(dt); styleUpdate(dt);
   if (R.rain && world.rainMesh) updateRain(world.rainMesh, dt);
   world.beamPivot.rotation.y += dt * 0.7;
   // bots publish snapshots at 10 Hz, like players on the network would
@@ -4952,7 +4959,7 @@ function drawMinimap() {
   g.fillStyle = '#0d0f17'; g.fillRect(0, 0, W, W);
   g.translate(W / 2, W / 2); g.rotate(rot); g.scale(k, k); g.translate(-(R.x + 1000) * s, -(R.z + 1000) * s);
   g.drawImage(world.map, 0, 0);
-  const route = ev.active && ev.pts ? ev.pts : roam.gps;
+  const route = ev.active && ev.pts ? ev.pts : roam.gpsR ? [[R.x, R.z, 0], ...roam.gpsR.pts.slice(roam.gpsR.idx)] : roam.gps;
   if (route) { g.strokeStyle = ev.active ? '#ffb547' : '#ff5fa8'; g.lineWidth = 7 / k; g.lineJoin = 'round'; g.beginPath(); route.forEach(([x, z], i) => { const a = (x + 1000) * s, b = (z + 1000) * s; if (i) g.lineTo(a, b); else g.moveTo(a, b); }); g.stroke(); }
   if (!ev.active) for (const m of markers) { g.fillStyle = m.def.color; g.beginPath(); g.arc((m.x + 1000) * s, (m.z + 1000) * s, 7 / k, 0, Math.PI * 2); g.fill(); }
   if (ev.active && ev.cps && ev.cps[ev.next]) { const c = ev.cps[ev.next]; g.strokeStyle = '#ffffff'; g.lineWidth = 3 / k; g.beginPath(); g.arc((c.x + 1000) * s, (c.z + 1000) * s, 9 / k, 0, Math.PI * 2); g.stroke(); }
@@ -5512,9 +5519,10 @@ const EVENTS = [
   { id: 'isle', type: 'drift', name: 'Island Drift', at: [-200, 1180], time: 60, color: '#ff3da8' },
   { id: 'sky', type: 'sprint', name: 'Skyway Sprint', from: [-560, 640], to: [900, -200], color: '#ffb547' },
   { id: 'drag', type: 'drag', name: 'Drag Strip', at: [200, 640], color: '#ffe066' },
-  { id: 'garage', type: 'garage', name: 'Raven RS Garage', at: [-100, 250], color: '#ffffff' }
+  { id: 'garage', type: 'garage', name: 'Raven RS Garage', at: [-100, 250], color: '#ffffff' },
+  { id: 'hospital', type: 'hospital', name: 'Neon Bay Hospital', at: [100, -60], color: '#ff4d5e' }
 ];
-const TYPE_LABEL = { sprint: 'Sprint', circuit: 'Circuit', drift: 'Drift', drag: 'Drag race', garage: 'Garage' };
+const TYPE_LABEL = { sprint: 'Sprint', circuit: 'Circuit', drift: 'Drift', drag: 'Drag race', garage: 'Garage', hospital: 'Ambulance 103' };
 const markers = [];
 function eventRoute(def) {
   if (def.ring) {
@@ -5661,7 +5669,7 @@ function placeAtCheckpoint(cp) {
 function startRaceEvent(def, steps, rivals, mySlot = 0) {
   const loop = def.type === 'circuit', pts = routePolyline(steps);
   Object.assign(ev, { active: def, phase: 'count', t: 3.6, steps, pts, cps: checkpointsFrom(pts), next: 0, lap: 1, laps: def.laps || 1, time: 0, racers: rivals, finished: [], lastCp: null });
-  roam.gps = null; roam.wp = null;
+  roam.gps = null; roam.wp = null; roam.gpsR = null;
   // starting grid on the first edge of the route
   const st = steps[0], e = st.e, two = LANES_DIR[e.type] === 2, base = st.dir > 0 ? e.lo + 6 : e.hi - 6;
   const span = e.hi - e.lo - 12, slots = two ? [[16, 0], [16, 1], [6, 0], [6, 1]] : [[22, 0], [14, 0], [6, 0], [-2, 0]];
@@ -5699,6 +5707,8 @@ function interact() {
   if (mp.inv) { mpAccept(); return; }
   if (ev.active) return;
   const pr = ev.prompt; if (!pr) return;
+  if (pr.marker && pr.marker.def.type === 'hospital') { if (!amb.call) ambShift(!amb.on); return; }
+  if (amb.call) { showPop('Finish the emergency call first', 'info'); return; }
   if (pr.player) { mp.pick = pr.player.id; return; }
   if (pr.bot) { challengeBot(pr.bot); return; }
   const def = pr.marker.def;
@@ -5826,7 +5836,7 @@ function markerHud(dt) {
     for (const m of markers) {
       const d = Math.hypot(m.x - R.x, m.z - R.z);
       placeTag(m.tag, m.x, m.y + 6, m.z, 320);
-      if (d < 8 && Math.abs(m.y - R.y) < 3 && sp < 9) pr = { marker: m, text: TYPE_LABEL[m.def.type] + ': ' + m.def.name + (m.def.type === 'sprint' || m.def.type === 'circuit' ? ' · 3 rivals' : '') };
+      if (d < 8 && Math.abs(m.y - R.y) < 3 && sp < 9) pr = { marker: m, text: m.def.type === 'hospital' ? (amb.on ? (amb.call ? (amb.call.phase === 'back' ? 'Patient on board: stop at the entrance' : 'On a call: the GPS leads to the patient') : 'End ambulance shift · ' + livesTxt()) : 'Start ambulance shift: answer emergency calls') : TYPE_LABEL[m.def.type] + ': ' + m.def.name + (m.def.type === 'sprint' || m.def.type === 'circuit' ? ' · 3 rivals' : '') };
     }
     if (!pr && sp < 14) for (const p of net.players.values()) if (p.remote && p.rig && p.rig.visible && p.x !== undefined && Math.hypot(p.x - R.x, p.z - R.z) < 16 && Math.abs((p.y || 0) - R.y) < 3) { pr = { player: p, text: 'Challenge ' + p.name + ' · drag or street race' }; break; }
     if (!pr && sp < 14) for (const c of veh) if (c.bot && !c.racing && Math.hypot(c.x - R.x, c.z - R.z) < 16 && Math.abs((c.y || 0) - R.y) < 3) { pr = { bot: c, text: 'Challenge ' + net.players.get(c.id).name + ' to a 1v1 sprint' }; break; }
@@ -5856,26 +5866,129 @@ function markerHud(dt) {
   // arrow toward the next checkpoint or along the GPS route
   let tgt = null, dist = 0;
   if (ev.active && ev.cps && ev.cps[ev.next]) { tgt = ev.cps[ev.next]; dist = Math.hypot(tgt.x - R.x, tgt.z - R.z); }
-  else if (roam.gps) {
-    const g = roam.gps; let bi = 0, bd = Infinity;
-    for (let i = 0; i < g.length; i++) { const d = Math.hypot(g[i][0] - R.x, g[i][1] - R.z); if (d < bd) { bd = d; bi = i; } }
-    const j = Math.min(g.length - 1, bi + 3); tgt = { x: g[j][0], z: g[j][1] };
-    dist = Math.hypot(roam.wp.x - R.x, roam.wp.z - R.z);
-    if (dist < 30) { roam.gps = null; roam.wp = null; showPop('ARRIVED', 'info'); tgt = null; }
-    else if (bd > 45 && roamT - (roam.gpsT || 0) > 1.5) setWaypoint(roam.wp.x, roam.wp.z, true);
+  let label = null;
+  const km = (m) => (m > 999 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m');
+  if (!(ev.active && ev.cps) && roam.gps && roam.wp) {
+    const r = gpsTrack(dt);
+    if (!r) { roam.gps = null; roam.wp = null; roam.gpsR = null; showPop('ARRIVED', 'info'); }
+    else {
+      tgt = r.tgt; dist = r.left;
+      label = r.uturn ? 'TURN AROUND · ' + km(dist) : r.turn && r.turn.d < 250 ? (r.turn.right ? '↱ ' : '↰ ') + (r.turn.sharp ? 'SHARP ' : '') + (r.turn.right ? 'RIGHT' : 'LEFT') + ' ' + Math.round(r.turn.d / 10) * 10 + ' m · ' + km(dist) : km(dist);
+    }
   }
   const ar = $('roArrow');
-  if (tgt) { const a = Math.atan2(tgt.z - R.z, tgt.x - R.x) - R.h; ar.hidden = false; ar.firstChild.style.transform = `rotate(${(a * 180 / Math.PI + 90).toFixed(1)}deg)`; $('roDist').textContent = dist > 999 ? (dist / 1000).toFixed(1) + ' km' : Math.round(dist) + ' m'; }
+  if (tgt) { const a = Math.atan2(tgt.z - R.z, tgt.x - R.x) - R.h; ar.hidden = false; ar.firstChild.style.transform = `rotate(${(a * 180 / Math.PI + 90).toFixed(1)}deg)`; const t = label || km(dist); if ($('roDist').textContent !== t) $('roDist').textContent = t; }
   else ar.hidden = true;
 }
 
 /* ---- full map and GPS ---- */
+/* ---- GPS ----
+   The route starts on the lane the car is actually on, in the direction it is driving (a U-turn costs extra, so the
+   GPS only says "turn around" when that is really shorter), and ends at the point of the road nearest the target,
+   not at the nearest crossing. While driving, progress is tracked along the route itself, the arrow looks a speed-
+   dependent distance ahead, the next turn is announced, and the route is rebuilt when the car leaves it or drives
+   the wrong way along it. */
+const GPS_UTURN = 160; // metres of detour a U-turn is "worth"
+const edgeW = (e) => (e.s1 - e.s0) * (e.type === 'street' ? 1.25 : 1);
+// ban: an edge not to use (the one the car is on: turning back along it is the U-turn option, priced separately)
+function dijkstraFrom(src, ban) {
+  const N = world.nodes.length, dist = new Float64Array(N).fill(Infinity), prev = new Array(N).fill(null), done = new Uint8Array(N);
+  dist[src.id] = 0;
+  for (;;) {
+    let u = -1, bd = Infinity; for (let i = 0; i < N; i++) if (!done[i] && dist[i] < bd) { bd = dist[i]; u = i; }
+    if (u < 0) break; done[u] = 1;
+    const n = world.nodes[u];
+    for (const e of n.edges) { if (e === ban) continue; const o = e.a === n ? e.b : e.a, w = dist[u] + edgeW(e); if (w < dist[o.id]) { dist[o.id] = w; prev[o.id] = { e, dir: e.a === n ? 1 : -1, from: u }; } }
+  }
+  return { dist, prev };
+}
+const stepsTo = (D, src, dst) => { const out = []; let cur = dst.id; while (cur !== src.id) { const p = D.prev[cur]; if (!p) return null; out.unshift({ e: p.e, dir: p.dir }); cur = p.from; } return out; };
+// nearest point on any edge; y (when given) keeps the car on the deck or the street it is really on
+function gpsSnap(x, z, y) {
+  let best = null, bd = Infinity;
+  for (const e of world.edges) for (let s = e.s0 + 2; s <= e.s1 - 2; s += 6) {
+    const p = rPoint(e.road, s), hy = e.road.hAt ? e.road.hAt(s) : 0;
+    if (y !== undefined && Math.abs(hy - y) > 4) continue;
+    const d = Math.hypot(p.x - x, p.z - z); if (d < bd) { bd = d; best = { e, s, p }; }
+  }
+  if (!best && y !== undefined) return gpsSnap(x, z);
+  return best;
+}
+// points along one edge from s=a to s=b
+function edgePts(e, a, b) {
+  const pts = [], n = Math.max(1, Math.ceil(Math.abs(b - a) / 15));
+  for (let i = 0; i <= n; i++) { const sv = a + (b - a) * i / n, p = rPoint(e.road, sv); pts.push([p.x, p.z, e.road.hAt ? e.road.hAt(sv) : 0]); }
+  return pts;
+}
+function gpsBuild(x, z, h, y, tx, tz) {
+  const A = gpsSnap(x, z, y), B = gpsSnap(tx, tz); if (!A || !B) return null;
+  const fwd = Math.cos(h) * A.p.tx + Math.sin(h) * A.p.tz >= 0 ? 1 : -1;
+  // leaving the current edge: ahead (to its forward end) or after a U-turn (to the end behind)
+  const exits = [fwd, -fwd].map((d) => ({ d, node: d > 0 ? A.e.b : A.e.a, cost: (d > 0 ? A.e.s1 - A.s : A.s - A.e.s0) + (d === fwd ? 0 : GPS_UTURN) }));
+  // reaching the target edge from either of its ends
+  const ins = [{ node: B.e.a, d: 1, cost: B.s - B.e.s0 }, { node: B.e.b, d: -1, cost: B.e.s1 - B.s }];
+  let best = null;
+  // same edge, target ahead: straight along it
+  // same edge: straight to it, or turn around if it is behind
+  if (A.e === B.e) best = (B.s - A.s) * fwd >= 0 ? { cost: Math.abs(B.s - A.s), pts: edgePts(A.e, A.s, B.s) } : { cost: Math.abs(B.s - A.s) + GPS_UTURN, uturn: true, pts: edgePts(A.e, A.s, B.s) };
+  for (const ex of exits) {
+    const D = dijkstraFrom(ex.node, A.e);
+    for (const en of ins) {
+      const c = ex.cost + D.dist[en.node.id] + en.cost; if (!(c < (best ? best.cost : Infinity))) continue;
+      const steps = ex.node === en.node ? [] : stepsTo(D, ex.node, en.node); if (!steps) continue;
+      best = { cost: c, uturn: ex.d !== fwd, pts: [...edgePts(A.e, A.s, ex.d > 0 ? A.e.s1 : A.e.s0), ...routePolyline(steps), ...edgePts(B.e, en.d > 0 ? B.e.s0 : B.e.s1, B.s)] };
+    }
+  }
+  if (!best) return null;
+  const pts = [[x, z, y || 0], ...best.pts, [tx, tz, 0]].filter((p, i, a) => !i || Math.hypot(p[0] - a[i - 1][0], p[1] - a[i - 1][1]) > 0.5);
+  // cumulative distance along the route, and the turns on it (heading change over ~20 m either side of a point)
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const at = (L) => gpsPointAt({ pts, cum }, L), turns = [];
+  for (let L = 25; L < cum[cum.length - 1] - 10; L += 5) {
+    const a = at(L - 20), m = at(L), b = at(L + 20), ax = m[0] - a[0], az = m[1] - a[1], bx = b[0] - m[0], bz = b[1] - m[1];
+    const ang = Math.atan2(ax * bz - az * bx, ax * bx + az * bz);
+    if (Math.abs(ang) > 0.6) { const last = turns[turns.length - 1]; if (last && L - last.L < 35) { if (Math.abs(ang) > Math.abs(last.ang)) Object.assign(last, { L, ang }); } else turns.push({ L, ang }); }
+  }
+  return { pts, cum, turns, uturn: !!best.uturn, idx: 0, along: 0, offT: 0, wrongT: 0 };
+}
+// the point a given distance along the route
+function gpsPointAt(g, L) {
+  const { pts, cum } = g; L = clamp(L, 0, cum[cum.length - 1]);
+  let i = 1; while (i < cum.length - 1 && cum[i] < L) i++;
+  const k = (L - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+  return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * k, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * k];
+}
 function setWaypoint(x, z, quiet) {
-  const a = nearestNode(roam.x, roam.z), b = nearestNode(x, z);
-  const steps = a === b ? [] : routeBetween(a, b);
-  roam.wp = { x, z }; roam.gpsT = roamT;
-  roam.gps = [[roam.x, roam.z, 0], ...(steps ? routePolyline(steps) : []), [x, z, 0]];
-  if (!quiet) showPop('GPS SET', 'info');
+  const R = roam, r = gpsBuild(R.x, R.z, R.h, R.y, x, z);
+  roam.wp = { x, z }; roam.gpsT = roamT; roam.gpsR = r;
+  roam.gps = r ? r.pts : [[R.x, R.z, 0], [x, z, 0]];
+  if (!quiet) showPop(r && r.uturn ? 'GPS SET · TURN AROUND' : 'GPS SET', 'info');
+}
+// keep track of where the car is on the route; returns { tgt, left, turn } or null when arrived
+function gpsTrack(dt) {
+  const R = roam, g = roam.gpsR;
+  if (!g) { const d = Math.hypot(roam.wp.x - R.x, roam.wp.z - R.z); return d < 25 ? null : { tgt: roam.wp, left: d }; }
+  const { pts, cum } = g;
+  // project the car on segments around the last known position (never jump far ahead to a crossing of the route)
+  let bi = g.idx, bd = Infinity, bl = g.along;
+  for (let i = Math.max(1, g.idx - 3); i < Math.min(pts.length, g.idx + 25); i++) {
+    const [x0, z0] = pts[i - 1], [x1, z1] = pts[i], dx = x1 - x0, dz = z1 - z0, L2 = dx * dx + dz * dz || 1;
+    const t = clamp(((R.x - x0) * dx + (R.z - z0) * dz) / L2, 0, 1), d = Math.hypot(R.x - x0 - dx * t, R.z - z0 - dz * t);
+    if (d < bd) { bd = d; bi = i; bl = cum[i - 1] + Math.sqrt(L2) * t; }
+  }
+  g.idx = bi; g.along = Math.max(g.along - 10, bl);
+  const total = cum[cum.length - 1], left = total - g.along;
+  if (left < 20 || Math.hypot(roam.wp.x - R.x, roam.wp.z - R.z) < 18) return null;
+  // off the route, or driving the wrong way along it: rebuild (at most every 2 s)
+  const sx = pts[bi][0] - pts[bi - 1][0], sz = pts[bi][1] - pts[bi - 1][1], sl = Math.hypot(sx, sz) || 1;
+  const along = (R.vx * sx + R.vz * sz) / sl;
+  g.offT = bd > 16 ? g.offT + dt : 0;
+  g.wrongT = along < -4 ? g.wrongT + dt : Math.max(0, g.wrongT - dt);
+  if ((g.offT > 1 || g.wrongT > 1.5) && roamT - (roam.gpsT || 0) > 2) { setWaypoint(roam.wp.x, roam.wp.z, true); return gpsTrack(0); }
+  // look further ahead the faster the car goes
+  const sp = Math.hypot(R.vx, R.vz), p = gpsPointAt(g, g.along + clamp(18 + sp * 1.1, 18, 70));
+  const nt = g.turns.find((t) => t.L > g.along + 4);
+  return { tgt: { x: p[0], z: p[1] }, left, turn: nt && nt.L - g.along < 400 ? { d: nt.L - g.along, right: nt.ang > 0, sharp: Math.abs(nt.ang) > 2.4 } : null, uturn: g.uturn && g.along < 30 };
 }
 function setMap(on) {
   roam.mapOpen = on; $('bigmap').hidden = !on;
@@ -5886,7 +5999,8 @@ function drawBigMap() {
   const cv = $('bigmapC'), g = cv.getContext('2d'), W = cv.width, H = cv.height, sc = W / 2000;
   g.drawImage(world.map, 0, 0, W, H);
   const P = (x, z) => [(x + 1000) * sc, (z + 1000) * sc];
-  if (roam.gps) { g.strokeStyle = '#ff5fa8'; g.lineWidth = 4; g.beginPath(); roam.gps.forEach(([x, z], i) => { const [a, b] = P(x, z); if (i) g.lineTo(a, b); else g.moveTo(a, b); }); g.stroke(); }
+  const gr = roam.gpsR ? [[roam.x, roam.z, 0], ...roam.gpsR.pts.slice(roam.gpsR.idx)] : roam.gps;
+  if (gr) { g.strokeStyle = '#ff5fa8'; g.lineWidth = 4; g.beginPath(); gr.forEach(([x, z], i) => { const [a, b] = P(x, z); if (i) g.lineTo(a, b); else g.moveTo(a, b); }); g.stroke(); }
   g.font = '600 13px "Inter", sans-serif'; g.textBaseline = 'middle';
   for (const m of markers) {
     const [a, b] = P(m.x, m.z); g.fillStyle = m.def.color; g.beginPath(); g.arc(a, b, 7, 0, Math.PI * 2); g.fill();
@@ -5902,10 +6016,120 @@ $('bigmapC').addEventListener('click', (e) => {
   const x = (e.clientX - r.left) * cv.width / r.width / sc - 1000, z = (e.clientY - r.top) * cv.height / r.height / sc - 1000;
   setWaypoint(x, z); drawBigMap();
 });
-$('bigmapC').addEventListener('contextmenu', (e) => { e.preventDefault(); roam.gps = null; roam.wp = null; drawBigMap(); });
+$('bigmapC').addEventListener('contextmenu', (e) => { e.preventDefault(); roam.gps = null; roam.wp = null; roam.gpsR = null; drawBigMap(); });
 
-/* ---- style points: drift chains and near misses ---- */
-const style = { total: 0, chain: 0, chainT: 0, calm: 0, mult: 1, near: new Map() };
+/* ---- ambulance job: speed used to save lives ----
+   Start a shift at the hospital marker. Calls come in at random times; the GPS leads to the patient, you stop to pick
+   them up, then bring them back to the hospital. The patient's condition drops with time, and every hit, hard brake
+   or violent turn hurts them too, so the job is fast but smooth. Each call ends with a real first-aid lesson. */
+const AMB_CALLS = [
+  ['Chest pain', 'Heart attack signs: pain or pressure in the chest that can spread to an arm, the jaw or the back, with sweating or shortness of breath. Call 103 at once and keep the person seated, calm and still.'],
+  ['Someone collapsed', 'If a person does not respond and is not breathing normally, call 103 and start CPR: push hard and fast in the centre of the chest, 100 to 120 times a minute, until help arrives.'],
+  ['Choking at a cafe', 'An adult who is choking and cannot speak: give up to 5 firm back blows between the shoulder blades, then up to 5 abdominal thrusts. Repeat, and call 103 if it does not clear.'],
+  ['Stroke signs', 'Think FAST: Face drooping, Arm weakness, Speech slurred, Time to call 103. Note the time the signs started: doctors need it.'],
+  ['Kitchen burn', 'Cool a burn under cool running water for 20 minutes. No ice, butter or toothpaste. Cover it loosely with cling film or a clean plastic bag.'],
+  ['Elderly woman fell', 'After a fall, do not pull the person up quickly. Ask where it hurts, check for bleeding, keep them warm and call 103 if they are hurt or cannot get up.'],
+  ['Road accident', 'At a crash: put your hazard lights and a warning triangle out, call 103 and 102, and do not move an injured person unless there is a danger such as fire.'],
+  ['Heavy bleeding', 'Press firmly on the wound with a clean cloth and keep pressing without lifting it to look. Call 103. If blood soaks through, add another cloth on top.'],
+  ['Breathing trouble', 'Help the person sit upright, loosen tight clothing, and help them use their own inhaler if they have one. Call 103 if breathing does not get easier.'],
+  ['Child with high fever', 'A very high fever with a stiff neck, a rash that does not fade when pressed, or unusual drowsiness needs urgent help: call 103.']
+];
+const amb = { on: false, call: null, nextT: 0, saved: +store.get('amb-saved', '0') || 0, bar: null, pin: null, siren: null, sirenT: 0, hud: false };
+const livesTxt = () => amb.saved + (amb.saved === 1 ? ' life' : ' lives') + ' saved';
+const ambHospital = () => markers.find((m) => m.def.type === 'hospital');
+function ambShift(on, quiet) {
+  if (on === amb.on) return;
+  amb.on = on;
+  if (on) {
+    amb.nextT = 6 + Math.random() * 10;
+    // a light bar on the roof of whatever car you drive
+    const pos = carRig.position.clone(), rot = carRig.rotation.clone();
+    carRig.position.set(0, 0, 0); carRig.rotation.set(0, 0, 0); carRig.updateMatrixWorld(true);
+    const bb = new THREE.Box3().setFromObject(carRig); carRig.position.copy(pos); carRig.rotation.copy(rot);
+    const bar = new THREE.Group(), bx = new THREE.BoxGeometry(0.22, 0.12, 0.42);
+    const red = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.04, 0.05) }), blue = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.04, 0.1, 0.5) });
+    const r = new THREE.Mesh(bx, red), b = new THREE.Mesh(bx, blue); r.position.z = 0.24; b.position.z = -0.24;
+    bar.add(r, b); bar.position.set((bb.min.x + bb.max.x) / 2 - 0.1, bb.max.y + 0.04, 0); carRig.add(bar);
+    amb.bar = { g: bar, red, blue };
+    if (!amb.pin) { // the patient's location: a red column like the event markers
+      const geo = new THREE.CylinderGeometry(2.6, 2.6, 30, 24, 1, true); geo.translate(0, 15, 0);
+      amb.pin = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: columnTex(), color: new THREE.Color('#ff3040').multiplyScalar(1.6), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+    }
+    world.group.add(amb.pin); amb.pin.visible = false;
+    if (!quiet) showPop('SHIFT STARTED · WAIT FOR A CALL', 'info');
+  } else {
+    if (amb.call) ambClose();
+    if (amb.bar) { carRig.remove(amb.bar.g); amb.bar.g.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); amb.bar = null; }
+    if (amb.pin) amb.pin.visible = false;
+    sirenOff();
+    if (amb.hud && !ev.active) $('roEvent').hidden = true; amb.hud = false;
+    if (!quiet) showPop('SHIFT ENDED · ' + livesTxt().toUpperCase(), 'info');
+  }
+}
+function sirenOn() {
+  if (amb.siren || !audio) return;
+  try { const o = audio.ctx.createOscillator(), g = audio.ctx.createGain(); o.type = 'triangle'; o.frequency.value = 700; g.gain.value = 0.035; o.connect(g); g.connect(audio.fx); o.start(); amb.siren = { o, g }; } catch (e) { /* audio is optional */ }
+}
+function sirenOff() { if (!amb.siren) return; try { amb.siren.o.stop(); amb.siren.g.disconnect(); } catch (e) { /* already stopped */ } amb.siren = null; }
+function ambNewCall() {
+  const R = roam;
+  const ok = world.nodes.filter((n) => { const d = Math.hypot(n.x - R.x, n.z - R.z); return d > 350 && d < 1100 && n.z < 620 && ![...n.roads].some((r) => r.type === 'highway' || r.hAt || r.isBridge || r.sky); });
+  const n = ok[Math.floor(Math.random() * ok.length)]; if (!n) { amb.nextT = 5; return; }
+  const [name, tip] = AMB_CALLS[Math.floor(Math.random() * AMB_CALLS.length)], dist = Math.hypot(n.x - R.x, n.z - R.z) * 1.3;
+  amb.call = { name, tip, x: n.x, z: n.z, phase: 'go', cond: 100, t: 0, resp: 0, limit: dist / 12 + 40, loadT: 0 };
+  amb.pin.position.set(n.x, 0, n.z); amb.pin.visible = true;
+  setWaypoint(n.x, n.z, true); sirenOn();
+  showPop('EMERGENCY CALL · ' + name.toUpperCase(), 'bad');
+}
+// a hit hurts the patient: harder hits hurt more
+function ambBump(sev) {
+  const c = amb.call; if (!c || c.phase === 'go') return;
+  c.cond = Math.max(0, c.cond - Math.min(20, 3 + sev * 0.8));
+  showPop('CAREFUL · PATIENT HURT', 'bad');
+}
+function ambClose() { amb.call = null; roam.gps = null; roam.wp = null; roam.gpsR = null; if (amb.pin) amb.pin.visible = false; sirenOff(); amb.nextT = 20 + Math.random() * 40; }
+function ambFinish(ok) {
+  const c = amb.call, rows = [['Patient', c.name], ['Response time', fmtT(c.resp)], ['Trip to hospital', fmtT(c.t - c.resp)], ['Condition', Math.round(c.cond) + ' %']];
+  if (ok) { amb.saved++; store.set('amb-saved', String(amb.saved)); }
+  rows.push(['Lives saved', String(amb.saved)], ['First aid', c.tip]);
+  showResult(ok ? 'PATIENT SAVED' : 'TOO LATE', ok ? 'You got them there in time. Fast, but smooth: that is the job.' : 'Every second and every bump mattered. Next call, drive fast but smooth.', rows);
+  ambClose();
+}
+function ambFrame(dt) {
+  if (!amb.on) return;
+  const R = roam, c = amb.call, sp = Math.hypot(R.vx, R.vz);
+  // lights and two-tone siren while answering a call
+  amb.sirenT += dt;
+  const ph = Math.floor(amb.sirenT * 3) % 2;
+  if (amb.bar) { amb.bar.red.color.setRGB(c && ph ? 3 : 0.5, c && ph ? 0.2 : 0.04, 0.05); amb.bar.blue.color.setRGB(0.04, 0.1, c && !ph ? 3 : 0.5); }
+  if (amb.siren && audio) amb.siren.o.frequency.setTargetAtTime(Math.floor(amb.sirenT / 0.6) % 2 ? 960 : 700, audio.ctx.currentTime, 0.02);
+  if (amb.pin && amb.pin.visible) amb.pin.material.opacity = 0.7 + Math.sin(roamT * 6) * 0.3;
+  if (!c) {
+    if (!ev.active && ev.phase !== 'done') { amb.nextT -= dt; if (amb.nextT <= 0) ambNewCall(); }
+  } else {
+    c.t += dt;
+    const back = c.phase === 'back', hosp = ambHospital(), tx = back ? hosp.x : c.x, tz = back ? hosp.z : c.z, d = Math.hypot(tx - R.x, tz - R.z);
+    // the patient gets worse while waiting and while riding; rough driving makes it faster
+    c.cond -= dt * (100 / (c.limit * 2.2));
+    if (back && (Math.abs(R.acc) > G * 0.85 || Math.abs(R.lat) > G * 0.95)) c.cond -= dt * 9;
+    if (c.phase === 'go' && d < 14 && sp < 3) { c.phase = 'load'; c.loadT = 2.5; c.resp = c.t; showPop('LOADING PATIENT…', 'info'); }
+    else if (c.phase === 'load') {
+      if (sp > 4) { c.phase = 'go'; showPop('STOP TO LOAD THE PATIENT', 'bad'); }
+      else if ((c.loadT -= dt) <= 0) { c.phase = 'back'; c.limit = c.t + Math.hypot(hosp.x - R.x, hosp.z - R.z) * 1.3 / 12 + 35; amb.pin.visible = false; setWaypoint(hosp.x, hosp.z, true); showPop('PATIENT ON BOARD · TO THE HOSPITAL', 'info'); }
+    } else if (back && d < 16 && sp < 3) { ambFinish(true); return; }
+    if (c.cond <= 0) { c.cond = 0; ambFinish(false); return; }
+  }
+  // HUD line, shared with events (events take it over while they run)
+  if (ev.active) return;
+  const box = $('roEvent');
+  const cc = amb.call, txt = !cc ? 'AMBULANCE ON DUTY   ·   WAITING FOR A CALL   ·   ' + livesTxt().toUpperCase()
+    : ['AMBULANCE · ' + cc.name.toUpperCase(), cc.phase === 'back' ? 'TO HOSPITAL' : cc.phase === 'load' ? 'LOADING' : 'TO PATIENT', Math.round(Math.hypot((cc.phase === 'back' ? ambHospital().x : cc.x) - R.x, (cc.phase === 'back' ? ambHospital().z : cc.z) - R.z)) + ' m', 'CONDITION ' + Math.round(cc.cond) + '%', fmtT(cc.t)].join('   ·   ');
+  if (box.textContent !== txt) box.textContent = txt;
+  box.hidden = false; amb.hud = true;
+}
+
+/* ---- style points: drift chains ---- */
+const style = { total: 0, chain: 0, chainT: 0, calm: 0, mult: 1 };
 function showPop(text, cls = '') {
   const p = el('p', 'pop ' + cls, text); $('roPops').append(p);
   setTimeout(() => p.remove(), 1600);
@@ -5923,7 +6147,8 @@ function bankDrift() {
   if (pts > 60) addStyle(pts, 'DRIFT ×' + style.mult);
   style.chain = 0; style.chainT = 0; style.mult = 1; style.calm = 0;
 }
-function crashChain() {
+function crashChain(sev = 5) {
+  ambBump(sev);
   if (style.chain > 60) showPop('CRASHED · DRIFT LOST', 'bad');
   style.chain = 0; style.chainT = 0; style.mult = 1; style.calm = 0;
 }
@@ -5933,11 +6158,7 @@ function styleUpdate(dt) {
   else if (style.chain > 0) { style.calm += dt; if (style.calm > 0.6) bankDrift(); }
   const ch = $('roChain'), t = style.chain > 60 ? 'DRIFT ' + Math.round(style.chain).toLocaleString() + '  ×' + style.mult : '';
   if (ch.textContent !== t) ch.textContent = t;
-  if (sp > 19) for (const c of veh) {
-    if (c.bot) continue;
-    const d = Math.hypot(c.x - R.x, c.z - R.z);
-    if (d < 3.4 && d > 2.05 && Math.abs((c.y || 0) - R.y) < 2) { const last = style.near.get(c) || -9; if (roamT - last > 3) { style.near.set(c, roamT); addStyle(250 + Math.round(sp * 4), 'NEAR MISS'); } }
-  }
+  // no points for brushing past traffic at speed: the city rewards nothing reckless (speed belongs on the strip and in events)
 }
 
 /* ---- photo mode ---- */
