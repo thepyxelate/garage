@@ -6076,17 +6076,21 @@ function ambNewCall() {
   const ok = world.nodes.filter((n) => { const d = Math.hypot(n.x - R.x, n.z - R.z); return d > 350 && d < 1100 && n.z < 620 && ![...n.roads].some((r) => r.type === 'highway' || r.hAt || r.isBridge || r.sky); });
   const n = ok[Math.floor(Math.random() * ok.length)]; if (!n) { amb.nextT = 5; return; }
   const [name, tip] = AMB_CALLS[Math.floor(Math.random() * AMB_CALLS.length)], dist = Math.hypot(n.x - R.x, n.z - R.z) * 1.3;
-  amb.call = { name, tip, x: n.x, z: n.z, phase: 'go', cond: 100, t: 0, resp: 0, limit: dist / 12 + 40, loadT: 0 };
+  amb.call = { name, tip, x: n.x, z: n.z, phase: 'go', cond: 100, t: 0, resp: 0, loadT: 0, hitT: 0 };
+  ambLeg(amb.call, dist, 2); // waiting patients get worse slowly
   amb.pin.position.set(n.x, 0, n.z); amb.pin.visible = true;
   setWaypoint(n.x, n.z, true); sirenOn();
   showPop('EMERGENCY CALL · ' + name.toUpperCase(), 'bad');
 }
 // a hit hurts the patient: harder hits hurt more
 function ambBump(sev) {
-  const c = amb.call; if (!c || c.phase === 'go') return;
-  c.cond = Math.max(0, c.cond - Math.min(20, 3 + sev * 0.8));
+  const c = amb.call; if (!c || c.phase !== 'back' || roamT - c.hitT < 0.6) return; // one crash counts once
+  c.hitT = roamT;
+  c.cond = Math.max(0, c.cond - Math.min(12, 2 + sev * 0.5));
   showPop('CAREFUL · PATIENT HURT', 'bad');
 }
+// give a leg of the trip a time budget: about 3 times the time at a calm 43 km/h, plus 75 s; the condition runs out with it
+function ambLeg(c, dist, slow = 1) { c.legT = 0; c.budget = (dist / 12) * 3 + 75; c.rate = 100 / (c.budget * slow); }
 function ambClose() { amb.call = null; roam.gps = null; roam.wp = null; roam.gpsR = null; if (amb.pin) amb.pin.visible = false; sirenOff(); amb.nextT = 20 + Math.random() * 40; }
 function ambFinish(ok) {
   const c = amb.call, rows = [['Patient', c.name], ['Response time', fmtT(c.resp)], ['Trip to hospital', fmtT(c.t - c.resp)], ['Condition', Math.round(c.cond) + ' %']];
@@ -6110,12 +6114,13 @@ function ambFrame(dt) {
     c.t += dt;
     const back = c.phase === 'back', hosp = ambHospital(), tx = back ? hosp.x : c.x, tz = back ? hosp.z : c.z, d = Math.hypot(tx - R.x, tz - R.z);
     // the patient gets worse while waiting and while riding; rough driving makes it faster
-    c.cond -= dt * (100 / (c.limit * 2.2));
-    if (back && (Math.abs(R.acc) > G * 0.85 || Math.abs(R.lat) > G * 0.95)) c.cond -= dt * 9;
+    c.legT += dt; c.cond -= dt * c.rate;
+    // only truly rough driving hurts the patient: sliding or a violent swerve (normal braking is fine)
+    if (back && ((R.drift && R.slipA > 0.2) || Math.abs(R.lat) > G * 1.15)) c.cond -= dt * 4;
     if (c.phase === 'go' && d < 14 && sp < 3) { c.phase = 'load'; c.loadT = 2.5; c.resp = c.t; showPop('LOADING PATIENT…', 'info'); }
     else if (c.phase === 'load') {
       if (sp > 4) { c.phase = 'go'; showPop('STOP TO LOAD THE PATIENT', 'bad'); }
-      else if ((c.loadT -= dt) <= 0) { c.phase = 'back'; c.limit = c.t + Math.hypot(hosp.x - R.x, hosp.z - R.z) * 1.3 / 12 + 35; amb.pin.visible = false; setWaypoint(hosp.x, hosp.z, true); showPop('PATIENT ON BOARD · TO THE HOSPITAL', 'info'); }
+      else if ((c.loadT -= dt) <= 0) { c.phase = 'back'; ambLeg(c, Math.hypot(hosp.x - R.x, hosp.z - R.z) * 1.3); amb.pin.visible = false; setWaypoint(hosp.x, hosp.z, true); showPop('PATIENT ON BOARD · TO THE HOSPITAL', 'info'); }
     } else if (back && d < 16 && sp < 3) { ambFinish(true); return; }
     if (c.cond <= 0) { c.cond = 0; ambFinish(false); return; }
   }
@@ -6123,7 +6128,7 @@ function ambFrame(dt) {
   if (ev.active) return;
   const box = $('roEvent');
   const cc = amb.call, txt = !cc ? 'AMBULANCE ON DUTY   ·   WAITING FOR A CALL   ·   ' + livesTxt().toUpperCase()
-    : ['AMBULANCE · ' + cc.name.toUpperCase(), cc.phase === 'back' ? 'TO HOSPITAL' : cc.phase === 'load' ? 'LOADING' : 'TO PATIENT', Math.round(Math.hypot((cc.phase === 'back' ? ambHospital().x : cc.x) - R.x, (cc.phase === 'back' ? ambHospital().z : cc.z) - R.z)) + ' m', 'CONDITION ' + Math.round(cc.cond) + '%', fmtT(cc.t)].join('   ·   ');
+    : ['AMBULANCE · ' + cc.name.toUpperCase(), cc.phase === 'back' ? 'TO HOSPITAL' : cc.phase === 'load' ? 'LOADING' : 'TO PATIENT', Math.round(Math.hypot((cc.phase === 'back' ? ambHospital().x : cc.x) - R.x, (cc.phase === 'back' ? ambHospital().z : cc.z) - R.z)) + ' m', 'CONDITION ' + Math.round(cc.cond) + '%', 'TIME LEFT ' + fmtT(Math.max(0, cc.cond / cc.rate))].join('   ·   ');
   if (box.textContent !== txt) box.textContent = txt;
   box.hidden = false; amb.hud = true;
 }
