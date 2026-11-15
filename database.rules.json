@@ -1,0 +1,29 @@
+{
+  "rules": {
+    "rooms": {
+      "$room": {
+        "info": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists() || (newData.child('n').isString() && newData.child('n').val().length <= 16 && newData.child('c').isString() && newData.child('look').isString() && newData.child('look').val().length < 2000)"
+          }
+        },
+        "live": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists() || newData.hasChildren(['0','1','2','3','4'])"
+          }
+        },
+        "chat": {
+          ".read": "auth != null",
+          "$msg": {
+            ".write": "auth != null && !data.exists() && newData.child('u').val() === auth.uid",
+            ".validate": "newData.child('t').isString() && newData.child('t').val().length <= 120"
+          }
+        }
+      }
+    }
+  }
+}
