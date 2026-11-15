@@ -4308,10 +4308,19 @@ function showChat(id, text) {
   const log = $('chatLog'); log.append(line); while (log.children.length > 7) log.firstChild.remove();
   setTimeout(() => line.classList.add('old'), 14000);
 }
+// cheat codes typed in chat: handled locally, never sent to other players
+const CHEATS = { '/nitro': () => { roam.infNos = !roam.infNos; return 'Infinite nitro ' + (roam.infNos ? 'ON' : 'OFF'); } };
+function chatCheat(text) {
+  const fn = CHEATS[text.trim().toLowerCase()]; if (!fn) return false;
+  const line = el('p'); line.append(el('b', '', 'Mod: '), document.createTextNode(fn()));
+  const log = $('chatLog'); log.append(line); while (log.children.length > 7) log.firstChild.remove();
+  setTimeout(() => line.classList.add('old'), 6000);
+  return true;
+}
 function openChat() { roam.chat = true; const i = $('chatIn'); i.hidden = false; i.value = ''; $('chat').classList.add('open'); i.focus(); for (const k in roam.keys) roam.keys[k] = false; }
 function closeChat(send) {
   const i = $('chatIn');
-  if (send && i.value.trim()) net.sendChat(i.value);
+  if (send && i.value.trim() && !chatCheat(i.value)) net.sendChat(i.value);
   roam.chat = false; i.blur(); i.hidden = true; $('chat').classList.remove('open');
 }
 
@@ -4349,8 +4358,9 @@ function stepPlayer(dt) {
   } else if (R.gear > 1) R.gear = 1;
   R.thr += ((fwd || rev ? 1 : 0) - R.thr) * Math.min(1, dt * 10);
   // nitro: hold Shift; refills slowly, faster while drifting
-  R.nosOn = !!k.nos && R.nos > 0.02 && cfg.nitro > 0 && fwd;
-  if (R.nosOn) R.nos = Math.max(0, R.nos - dt * 0.3); else R.nos = Math.min(1, R.nos + dt * (R.drift ? 0.1 : 0.03));
+  R.nosOn = !!k.nos && R.nos > 0.02 && (cfg.nitro > 0 || R.infNos) && fwd;
+  if (R.infNos) R.nos = 1;
+  else if (R.nosOn) R.nos = Math.max(0, R.nos - dt * 0.3); else R.nos = Math.min(1, R.nos + dt * (R.drift ? 0.1 : 0.03));
   // drive force at the rear wheels; past the tyres' limit they spin
   let Fd = 0, spin = 0;
   const capD = p.grip * 1.3 * m * G * gm;
@@ -4664,8 +4674,8 @@ function roamHud(dt) {
   const R = roam;
   $('roKmh').textContent = Math.round(Math.abs(R.vf) * 3.6);
   $('roGear').textContent = R.vf < -0.5 && R.keys.down ? 'R' : String(R.gear);
-  $('roNos').style.width = (cfg.nitro > 0 ? R.nos * 100 : 0).toFixed(1) + '%';
-  $('roNosRow').classList.toggle('off', !(cfg.nitro > 0)); $('roNosRow').classList.toggle('live', R.nosOn);
+  $('roNos').style.width = (cfg.nitro > 0 || R.infNos ? R.nos * 100 : 0).toFixed(1) + '%';
+  $('roNosRow').classList.toggle('off', !(cfg.nitro > 0 || R.infNos)); $('roNosRow').classList.toggle('live', R.nosOn);
   R.areaT -= dt; if (R.areaT <= 0) { R.areaT = 0.5; const a = R.deck && R.deck.sky ? 'NEON SKYWAY' : areaName(R.x, R.z); if ($('roArea').textContent !== a) $('roArea').textContent = a; }
   // name tags and chat bubbles
   const me = tagFor('me'); me.msgT -= dt; if (me.msgT <= 0 && me.el.classList.contains('says')) me.el.classList.remove('says');
