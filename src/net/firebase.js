@@ -17,6 +17,7 @@ export async function firebaseTransport(config, net, room = 'city') {
   const parse = (snap) => { const v = snap.val() || {}; let look = {}; try { look = JSON.parse(v.look || '{}'); } catch (e) { /* bad data: default car */ } return { name: v.n, color: v.c, look }; };
   const warn = (e) => console.warn('[net]', e && e.message ? e.message : e);
   return {
+    id: uid, // lets race messages in chat be addressed to one driver
     enter(info) {
       inRoom = true; joinedAt = Date.now();
       onDisconnect(infoRef).remove().catch(warn); onDisconnect(liveRef).remove().catch(warn);

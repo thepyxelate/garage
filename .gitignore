@@ -2,3 +2,6 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# original car models (optimized copies live in public/cars)
+/*.glb
