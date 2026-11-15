@@ -24,7 +24,7 @@ const MODEL_LIST = [
   ['m4', 'BMW M4 Widebody', 'Heavy widebody bruiser. Drives like the Blackjaw.'],
   ['audi90', 'Audi 90 GTO', 'Boxy race car from the IMSA era. Drives like the Vanta GT.']
 ];
-// Cars that come from a .glb in public/cars. They are visual only: power, handling and sound come from `base`.
+// Cars that come from a .glb in public/cars. Power and handling come from `base`; each has its own engine voice (ENGINE_VOICE).
 // `wheels` matches the materials that spin; parts shared by both sides are split into four corners on load.
 const GLB_CARS = {
   supra: { file: 'cars/supra.glb', base: 'raven', length: 4.55, wheels: /^(wheel|Brake_Disc)$/ },
@@ -2177,13 +2177,46 @@ let audio = null, soundOn = store.get('sound', 'on') !== 'off';
 // the rasp and burble of uneven pipes. Each car has its own voice, and each voice has two spectra (on and
 // off the throttle) that are crossfaded and pushed through fixed exhaust and intake resonances, so the
 // timbre changes with revs and load instead of one tone sliding up and down.
-// form = exhaust resonances, hi = intake resonances: [Hz, Q, level]
+// Every voice plays the same recorded engine, so the character comes from what is layered and filtered on top:
+//   pf      playback speed of the recording          rec   [lo, hi] part of the recording's rpm range to use
+//   cyl     firing pulses per engine cycle (I4 4, I5 5, I6 6, V8 8, V10 10; a two-rotor rotary fires like an I4)
+//   half    level of the orders halfway between firings (V8 burble, I5 warble), quarter: the ones between those
+//   syn     level of the synthesized layer (a PeriodicWave built from the orders above) under the recording
+//   det     second synth oscillator at cyc * det: slow beating between the two (warble, V10 shimmer)
+//   bright  0..1: how slowly the firing harmonics fall off (1 = rotary buzz)
+//   clip    drive of the synth layer's waveshaper     rough  idle pitch wander     lope  idle throb (fades with revs)
+//   form    exhaust resonances [Hz, Q, level] (peaking filters on the whole engine)    hi  intake resonance [Hz, Q]
+//   vt      [revs share, dB]: a bright step above that share of the redline (VTEC)
+//   tw      turbo whistle [Hz at no boost, Hz added at full boost, level]
+//   pop     lift-off crackle [chance per frame, Hz, level, pops per burst]
 const ENGINE_VOICE = {
-  raven: { pf: 1.1, eq: [['peaking', 900, 1, 2]], cyl: 6, half: 0.34, quarter: 0, rough: 0.07, det: 1.004, clip: 2.4, lope: 0.16, form: [[150, 1.2, 1.0], [330, 2.2, 0.8], [720, 2.6, 0.5]], hi: [[1500, 2.2, 0.55], [2900, 2.6, 0.32]] },
-  ember: { pf: 1.28, eq: [['highpass', 85, 0.7, 0], ['peaking', 2200, 1, 4]], cyl: 4, half: 0.5, quarter: 0.12, rough: 0.1, det: 1.006, clip: 3.0, lope: 0.1, form: [[190, 1.3, 0.85], [460, 2.4, 0.9], [980, 2.8, 0.6]], hi: [[1900, 2.4, 0.65], [3600, 2.6, 0.4]] },
-  blackjaw: { pf: 0.94, eq: [['lowshelf', 130, 0.7, 4]], cyl: 8, half: 0.62, quarter: 0.42, rough: 0.12, det: 1.008, clip: 3.4, lope: 0.38, form: [[95, 1.0, 1.25], [210, 1.8, 1.0], [480, 2.2, 0.5]], hi: [[1100, 2.0, 0.42], [2200, 2.2, 0.24]] },
-  vanta: { pf: 1.2, eq: [['peaking', 3000, 1, 5], ['lowshelf', 110, 0.7, -3]], cyl: 10, half: 0.42, quarter: 0, rough: 0.05, det: 1.003, clip: 2.0, lope: 0.08, form: [[170, 1.3, 0.7], [420, 2.4, 0.8], [900, 3.0, 0.7]], hi: [[2100, 3.0, 0.75], [4200, 3.0, 0.5]] }
+  // fictional cars, voiced after the engines they stand in for
+  raven: { pf: 1.16, cyl: 4, half: 0.06, quarter: 0, syn: 0.3, det: 1.004, bright: 0.2, clip: 2.6, rough: 0.07, lope: 0.08, eq: [['peaking', 900, 1, 2]], form: [[250, 2, 0.8], [1000, 3, 0.6], [2800, 4, 0.4]], hi: [1500, 2.2], tw: [1800, 4200, 1], pop: [0.08, 900, 1, 1] },
+  ember: { pf: 1.3, cyl: 4, half: 0, quarter: 0, syn: 0.18, det: 1.003, bright: 0.3, clip: 2.2, rough: 0.05, lope: 0.04, eq: [['highpass', 85, 0.7, 0]], form: [[350, 2, 0.7], [1400, 4, 0.7], [3500, 5, 0.5]], hi: [1900, 2.4], vt: [0.66, 6], tw: [2400, 4600, 0.8], pop: [0.03, 1300, 0.6, 1] },
+  blackjaw: { pf: 0.86, rec: [761, 5600], cyl: 8, half: 0.85, quarter: 0.45, syn: 0.34, det: 1.008, bright: 0.1, clip: 3.0, rough: 0.14, lope: 0.45, eq: [['lowshelf', 130, 0.7, 4]], form: [[90, 1.5, 1.2], [400, 2, 0.9], [1200, 3, 0.4]], hi: [1100, 2.0], tw: [1200, 3000, 1], pop: [0.06, 450, 1.1, 2] },
+  vanta: { pf: 1.24, rec: [1500, 7150], cyl: 10, half: 0.15, quarter: 0, syn: 0.3, det: 1.0035, bright: 0.4, clip: 2.2, rough: 0.04, lope: 0.04, eq: [['lowshelf', 110, 0.7, -3]], form: [[300, 2, 0.6], [1500, 4, 0.8], [4000, 5, 0.7]], hi: [2100, 3.0], tw: [2600, 5000, 0.8], pop: [0.03, 1500, 1.4, 1] },
+  // the imported cars, voiced after their real engines
+  supra: { pf: 1.0, cyl: 6, half: 0.05, quarter: 0, syn: 0.32, det: 1.002, bright: 0.25, clip: 2.0, rough: 0.04, lope: 0.05, eq: [['highshelf', 3000, 0.7, -4]], form: [[180, 2, 0.9], [650, 3, 1.1], [1800, 4, 0.4]], hi: [1400, 2.0], tw: [2200, 6000, 1.6], pop: [0.07, 800, 1, 1] },
+  rx7: { pf: 1.32, rec: [1200, 7150], cyl: 4, half: 0.35, quarter: 0.2, syn: 0.36, det: 1.006, bright: 1, clip: 5.0, rough: 0.3, lope: 0.2, eq: [['highpass', 120, 0.7, 0]], form: [[300, 2, 0.8], [1100, 4, 0.9], [3000, 5, 0.7]], hi: [2400, 2.6], tw: [2600, 4000, 0.7], pop: [0.16, 1000, 1.1, 2] },
+  m4: { pf: 0.92, rec: [761, 6400], cyl: 6, half: 0.08, quarter: 0, syn: 0.4, det: 1.003, bright: 0.6, clip: 3.8, rough: 0.05, lope: 0.04, eq: [['lowshelf', 160, 0.7, 2]], form: [[140, 2, 1.1], [1200, 4, 1.1], [3200, 6, 1.2]], hi: [1700, 2.4], tw: [3800, 3000, 0.5], pop: [0.22, 1100, 1.2, 3] },
+  audi90: { pf: 1.12, cyl: 5, half: 0.55, quarter: 0.1, syn: 0.36, det: 1.012, bright: 0.3, clip: 3.6, rough: 0.18, lope: 0.12, eq: [], form: [[220, 2, 0.9], [900, 3, 0.8], [2600, 4, 0.6]], hi: [1300, 2.0], tw: [1300, 2600, 1.4], pop: [0.3, 600, 1.6, 2] }
 };
+const voiceOf = (id) => ENGINE_VOICE[id] || ENGINE_VOICE[baseOf(id)] || ENGINE_VOICE.raven;
+// the synth layer's spectrum: harmonics of the engine cycle (rpm / 120 Hz). Firing harmonics (multiples of cyl)
+// carry the note, the half and quarter orders between them add burble and warble, everything else a little grit.
+function engineWave(ctx, V) {
+  const N = Math.min(48, V.cyl * 3 + 2), re = new Float32Array(N + 1), im = new Float32Array(N + 1), c = V.cyl;
+  for (let k = 1; k <= N; k++) {
+    const r = k % c, ord = k / c;
+    let a;
+    if (r === 0) a = 1 / Math.pow(ord, 1.2 - V.bright * 0.8);
+    else if (Math.abs(r - c / 2) <= 0.5) a = V.half * 0.8 / (ord + 0.5);
+    else if (Math.abs(r - c / 4) <= 0.5 || Math.abs(r - 3 * c / 4) <= 0.5) a = V.quarter * 0.6 / (ord + 0.5);
+    else a = (0.04 + V.bright * 0.25) / (ord + 1);
+    im[k] = a;
+  }
+  return ctx.createPeriodicWave(re, im);
+}
 // Recorded engine: loops cut from a real acceleration ramp, a deceleration ramp and an idle take, one every 250-500 rpm.
 // Each loop was straightened to a constant speed and holds a whole number of engine cycles (its true rpm measured from
 // the waveform), so all loops can run in step: playback speed follows the revs, the two loops nearest the current
@@ -2207,7 +2240,7 @@ function audioStart(testCtx) {
   if (audio || (!soundOn && !testCtx)) return;
   try {
     const ctx = testCtx || new (window.AudioContext || window.webkitAudioContext)();
-    const V = ENGINE_VOICE[baseOf(cfg.model)] || ENGINE_VOICE.raven;
+    const V = voiceOf(cfg.model);
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.004; comp.release.value = 0.12;
     const out = ctx.createGain(); out.gain.value = 1.3; out.connect(comp); comp.connect(ctx.destination);
     const fx = ctx.createGain(); fx.gain.value = 1; fx.connect(ctx.destination); // turbo effects skip the engine compressor so they cut through
@@ -2226,13 +2259,25 @@ function audioStart(testCtx) {
       return { lg, loops: list.map((l) => { const b = ctx.createBuffer(1, l.f.length, ENG_SMP.sr); b.getChannelData(0).set(l.f); const src = ctx.createBufferSource(); src.buffer = b; src.loop = true; const gn = GN(0); src.connect(gn); gn.connect(lg); src.start(t0); return { rpm: l.rpm, src, gn }; }) };
     };
     const lOn = layer(SM.on), lOff = layer(SM.off);
+    // synth layer under the recording: two detuned oscillators -> waveshaper -> lowpass that opens with revs
+    const wave = engineWave(ctx, V), so1 = OSC(wave, 40), so2 = OSC(wave, 40), sIn = GN(0.55), s2g = GN(0.7);
+    const shaper = ctx.createWaveShaper(); shaper.curve = softClip(1024, V.clip + (cfg.engine || 0) * 0.5); shaper.oversample = '2x';
+    const slp = BQ('lowpass', 1500, 0.7), synG = GN(0);
+    so1.connect(sIn); so2.connect(s2g); s2g.connect(sIn); sIn.connect(shaper); shaper.connect(slp); slp.connect(synG); synG.connect(eng);
+    // the car's EQ, its exhaust resonances, then shelves for the exhaust type, a turbo's muffling and the VTEC step
     let tail = eng; for (const [type, f, q, gain] of V.eq) { const e = BQ(type, f, q, gain); tail.connect(e); tail = e; }
-    tail.connect(g); g.connect(out);
+    for (const [f, q, lv] of V.form) { const e = BQ('peaking', f, q, lv * 5); tail.connect(e); tail = e; }
+    const exLow = ({ single: -2, dual: 0, quad: 2.5, center: 1.5 })[cfg.exhaust] || 0, exHigh = ({ single: 2, dual: 0, quad: -1, center: 1 })[cfg.exhaust] || 0;
+    const ls = BQ('lowshelf', 140, 0.7, exLow), hs = BQ('highshelf', 2800, 0.7, exHigh - (cfg.turbo !== 'none' ? 2 : 0));
+    tail.connect(ls); ls.connect(hs);
+    // idle lope: the engine's level throbs once per cycle, strongest at idle
+    const lopeG = GN(1), lopeO = OSC('sine', 7), lopeD = GN(0); lopeO.connect(lopeD); lopeD.connect(lopeG.gain);
+    hs.connect(lopeG); lopeG.connect(g); g.connect(out);
     // exhaust rasp and intake roar: noise pulsed at the firing frequency
     const firing = OSC('sine', 48);
     const rbp = BQ('bandpass', 900, 1.4), ram = GN(0.5), depth = GN(0.5), rg = GN(0);
     firing.connect(depth); depth.connect(ram.gain); noise().connect(rbp); rbp.connect(ram); ram.connect(rg); rg.connect(out);
-    const ibp = BQ('bandpass', 700, 0.8), iam = GN(0.5), idepth = GN(0.5), ig = GN(0);
+    const ibp = BQ('bandpass', V.hi[0], V.hi[1] * 0.4), iam = GN(0.5), idepth = GN(0.5), ig = GN(0);
     firing.connect(idepth); idepth.connect(iam.gain); noise().connect(ibp); ibp.connect(iam); iam.connect(ig); ig.connect(out);
     // turbo: spool whistle plus a thin compressor hiss
     const wh = OSC('sine', 2000), whg = GN(0); wh.connect(whg); whg.connect(out);
@@ -2245,7 +2290,7 @@ function audioStart(testCtx) {
     const sq1 = BQ('bandpass', 1000, 16), sq2 = BQ('bandpass', 1500, 20), sq2g = GN(0.55), sqG = GN(0);
     const sqn = noise(); sqn.connect(sq1); sqn.connect(sq2); sq1.connect(sqG); sq2.connect(sq2g); sq2g.connect(sqG); sqG.connect(fx);
     const whine = OSC('triangle', 400), whineG = GN(0); whine.connect(whineG); whineG.connect(out);
-    audio = { ctx, out, fx, nb, V, lOn, lOff, g, firing, rbp, rg, ibp, ig, wh, whg, thf, thg, hg, windF, windG, roadG, sq1, sq2, sqG, whine, whineG, spool: 0, lim: 0, popT: 0, duckT: 0, flut: null, jit: 0, sq: 0, prevVol: 0 };
+    audio = { ctx, out, fx, nb, V, lOn, lOff, g, so1, so2, slp, synG, hs, hsBase: exHigh - (cfg.turbo !== 'none' ? 2 : 0), lopeO, lopeD, firing, rbp, rg, ibp, ig, wh, whg, thf, thg, hg, windF, windG, roadG, sq1, sq2, sqG, whine, whineG, spool: 0, lim: 0, popT: 0, duckT: 0, flut: null, jit: 0, sq: 0, prevVol: 0 };
   } catch (e) { audio = null; }
 }
 // c: { ph, rpm, thr, shiftT, launched, blown, nosT } plus optional v (m/s) and slide (0..1, tyres letting go)
@@ -2254,20 +2299,28 @@ function audioUpdate(c, dt = 1 / 60) {
   const a = audio, t = a.ctx.currentTime, p = c.ph, V = a.V, u = Math.min(1.02, c.rpm / p.redline);
   const S = (prm, v, tc) => { if (Number.isFinite(v)) prm.setTargetAtTime(v, t, tc); };
   // no engine holds a perfectly steady speed: the pitch wanders a little, most at idle
-  a.jit += ((Math.random() - 0.5) * 0.02 - a.jit) * Math.min(1, dt * 5);
+  a.jit += ((Math.random() - 0.5) * 0.02 * (V.rough / 0.07) - a.jit) * Math.min(1, dt * 5);
   const cyc = Math.max(7, c.rpm / 120) * (1 + a.jit * Math.max(0.15, 1.1 - u * 1.4)), fire = cyc * V.cyl;
   // load: free revs barely build boost, an open throttle in gear does; a shift dumps it
   const vol = c.shiftT > 0 || c.blown ? 0 : c.thr, load = vol * (c.launched ? 1 : 0.3);
   S(a.firing.frequency, fire, 0.015);
+  // synth layer and idle lope follow the cycle frequency; the synth gets louder on throttle
+  S(a.so1.frequency, cyc, 0.015); S(a.so2.frequency, cyc * V.det, 0.015);
+  S(a.slp.frequency, 900 + u * 4500 + vol * 800, 0.04);
+  S(a.synG.gain, V.syn * (0.55 + 0.45 * vol), 0.03);
+  S(a.lopeO.frequency, cyc, 0.02);
+  S(a.lopeD.gain, V.lope * (cfg.ecu === 'low' ? 1.4 : 1) * Math.pow(Math.max(0, 1 - u * 1.6), 2) * 0.5, 0.05);
+  S(a.hs.gain, a.hsBase + (V.vt && u > V.vt[0] ? V.vt[1] : 0), 0.06);
   // where the game's revs sit on the recorded car's range, then: speed for every loop, level for the two nearest
-  const rr = REC_IDLE + clamp((c.rpm - p.idle) / (p.redline - p.idle), 0, 1.02) * (REC_TOP - REC_IDLE), rj = rr * (1 + a.jit * Math.max(0.1, 0.8 - u));
+  const [rLo, rHi] = V.rec || [REC_IDLE, REC_TOP];
+  const rr = rLo + clamp((c.rpm - p.idle) / (p.redline - p.idle), 0, 1.02) * (rHi - rLo), rj = rr * (1 + a.jit * Math.max(0.1, 0.8 - u));
   for (const [L, lv] of [[a.lOn, Math.sin(vol * Math.PI / 2)], [a.lOff, Math.cos(vol * Math.PI / 2)]]) {
     S(L.lg.gain, lv, 0.035);
     const n = L.loops.length; let i = 0; while (i < n - 2 && L.loops[i + 1].rpm <= rr) i++;
     const x = clamp((rr - L.loops[i].rpm) / (L.loops[i + 1].rpm - L.loops[i].rpm), 0, 1);
     for (let k = 0; k < n; k++) { const l = L.loops[k]; S(l.src.playbackRate, V.pf * rj / l.rpm, 0.015); S(l.gn.gain, k === i ? Math.cos(x * Math.PI / 2) : k === i + 1 ? Math.sin(x * Math.PI / 2) : 0, 0.02); }
   }
-  S(a.rbp.frequency, Math.min(6000, fire * 3.2), 0.03); S(a.ibp.frequency, 500 + u * 1700, 0.05);
+  S(a.rbp.frequency, Math.min(6000, fire * 3.2), 0.03); S(a.ibp.frequency, V.hi[0] * (0.45 + 0.75 * u), 0.05);
   // rev limiter: the ignition cuts in and out
   a.lim = c.rpm >= p.redline - 170 && c.thr > 0.5 ? (a.lim + 1) % 4 : 0;
   const cut = (a.lim >= 2 ? 0.35 : 1) * (t < a.duckT ? 0.4 : 1); // duck under the turbo flutter
@@ -2280,8 +2333,8 @@ function audioUpdate(c, dt = 1 / 60) {
   if (c.launched && c.shiftT <= 0 && a.prevVol > 0.6 && c.thr < 0.3 && a.spool > 0.3) flutter(); // lifting off with boost up flutters too
   a.prevVol = vol;
   a.spool += (target - a.spool) * Math.min(1, dt * (target > a.spool ? (big ? 1.6 : 2.6) : 9));
-  S(a.wh.frequency, 1500 + a.spool * (big ? 4200 : 5200), 0.05);
-  S(a.whg.gain, a.spool * (big ? 0.045 : 0.035), 0.05);
+  S(a.wh.frequency, V.tw[0] + a.spool * V.tw[1] * (big ? 0.8 : 1), 0.05);
+  S(a.whg.gain, a.spool * (big ? 0.045 : 0.035) * V.tw[2], 0.05);
   S(a.thg.gain, a.spool * (big ? 0.05 : 0.035), 0.05);
   S(a.hg.gain, c.nosT > 0 ? 0.045 : 0, 0.05);
   if (a.flut && vol > 0.5 && t - a.flut.t0 > 0.55 && !a.flut.fading) { a.flut.fading = true; a.flut.g.gain.setTargetAtTime(0, t, 0.22); }
@@ -2295,7 +2348,11 @@ function audioUpdate(c, dt = 1 / 60) {
   S(a.whine.frequency, clamp(v * 42, 180, 4200), 0.04); S(a.whineG.gain, cfg.gearbox === 'race' ? Math.min(1, v / 18) * (0.3 + 0.7 * vol) * 0.006 : 0, 0.05);
   // lift-off crackle from the exhaust
   a.popT -= dt;
-  if (c.launched && c.thr < 0.15 && c.shiftT <= 0 && u > 0.5 && a.popT <= 0 && Math.random() < 0.08) { a.popT = 0.06; pop(0.06 + Math.random() * 0.05); }
+  const P = V.pop;
+  if (c.launched && c.thr < 0.15 && c.shiftT <= 0 && u > 0.5 && a.popT <= 0 && Math.random() < P[0] * (cfg.ecu === 'high' ? 1.5 : 1)) {
+    a.popT = 0.06 + (P[3] - 1) * 0.05;
+    for (let i = 0; i < P[3]; i++) pop((0.06 + Math.random() * 0.05) * P[2], P[1] * (0.8 + Math.random() * 0.4), i * (0.03 + Math.random() * 0.03));
+  }
 }
 function burst(at, dur, f, q, vol, fEnd, dest) {
   const { ctx, nb, out } = audio;
@@ -2305,9 +2362,9 @@ function burst(at, dur, f, q, vol, fEnd, dest) {
   g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(vol, at + 0.006); g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
   src.connect(bp); bp.connect(g); g.connect(dest || out); src.start(at, Math.random() * 0.8); src.stop(at + dur + 0.02);
 }
-function pop(vol) {
+function pop(vol, f, delay = 0) {
   if (!audio) return;
-  try { burst(audio.ctx.currentTime, 0.045, 700 + Math.random() * 500, 0.8, vol); } catch (e) { /* audio is optional */ }
+  try { burst(audio.ctx.currentTime + delay, 0.045, f || 700 + Math.random() * 500, 0.8, vol); } catch (e) { /* audio is optional */ }
 }
 // "tsu-tu-tu-tu": boost dumps with a hiss, then the compressor surges and flutters out
 // recorded turbo flutter ("stu-tu-tu"), decoded once and reused by every race
